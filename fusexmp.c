@@ -502,7 +502,7 @@ static int xmp_write(const char *path, const char *buf, size_t size,
     close(fd);
   }
 
-  return c;
+  return c-1;
 }
 
 static int xmp_statfs(const char *path, struct statvfs *stbuf)
