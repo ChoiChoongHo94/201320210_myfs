@@ -63,6 +63,7 @@ static int xmp_getattr(const char *path, struct stat *stbuf)
   if(strcmp(path, "/") ==0){
 	stbuf->st_mode = S_IFDIR | 0755;
 	stbuf->st_nlink = 2;
+	stat(path, stbuf);
 	return 0;
   }
   
@@ -74,7 +75,7 @@ static int xmp_getattr(const char *path, struct stat *stbuf)
   
   sprintf(fullpath[0], "%s%s", global_context.driveA, path);
   sprintf(fullpath[1], "%s%s", global_context.driveB, path);
-  res = lstat(fullpath[0], stbuf);
+  res = stat(fullpath[0], stbuf);
   if (res == -1)
         return -errno;
 
@@ -135,8 +136,8 @@ static int xmp_readlink(const char *path, char *buf, size_t size)
 static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		       off_t offset, struct fuse_file_info *fi)
 {
-  char fullpath[PATH_MAX];
-
+  	char fullpath[PATH_MAX];
+	
 	DIR *dp;
 	struct dirent *de;
 
@@ -156,8 +157,12 @@ static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		memset(&st, 0, sizeof(st));
 		st.st_ino = de->d_ino;
 		st.st_mode = de->d_type << 12;
-
-		if (filler(buf, de->d_name, &st, 0))
+		
+		if(strcmp(de->d_name , "/") ==0){
+			filler(buf, de->d_name, &st, 0);
+			filler(buf, "..", &st, 0);
+		}
+		else if(filler(buf, de->d_name, &st, 0))
 			break;
 	}
 
@@ -413,85 +418,146 @@ static int xmp_open(const char *path, struct fuse_file_info *fi)
 static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     struct fuse_file_info *fi)
 {
-  //char fullpath[PATH_MAX];
-  char fullpath[2][PATH_MAX]; //*
+  int stripeSize = 512;
+  char fullpath[2][PATH_MAX]; 
   int fd;
   int res;
   int c=0;
-/*  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
-*/  
-  sprintf(fullpath[0], "%s%s", //*
-		global_context.driveA,path);
-  sprintf(fullpath[1], "%s%s", //*
-		global_context.driveB, path);
-  struct stat stAB[3];
-  stat(fullpath[0], &stAB[1]);
-  stat(fullpath[1], &stAB[2]);
-  stAB[0].st_size = 1;
-//printf
- // printf("@@read: %s, buf: %s, size: %d, offset: %d @@\n", fullpath[0], buf, (int)size,(int) offset);
-  (void) fi;
+  unsigned int tempsize[3];
+  unsigned int total;
+  struct stat statAB[2];
 
-  for(int i=0; i<2 ; i++){
-	  fd = open(fullpath[i], O_RDONLY);
+  sprintf(fullpath[0], "%s%s",
+                global_context.driveA,path);
+  sprintf(fullpath[1], "%s%s",
+                global_context.driveB, path);
+
+  stat(fullpath[0],&statAB[0]);
+  stat(fullpath[1],&statAB[1]);
+
+  unsigned int t = statAB[0].st_size + statAB[1].st_size -2;
+   
+  int n= t/stripeSize;
+  tempsize[1] = stripeSize;
+  tempsize[2] = t - n*stripeSize;
+ 
+  unsigned int sizeA=0;
+  unsigned int sizeB=0;
+  
+  (void) fi;
+  printf("@@ size: %d,n: %d, temp1: %d, temp2: %d  @@\n", (int) t ,n, (int)tempsize[1], (int)tempsize[2]);
+  for(int i=0; i<= n ; i++){
+	  fd = open(fullpath[i%2], O_RDONLY);
 	  if (fd == -1)
 	    return -errno;
- 	  printf("\n1@@read: %s, buf: %s, size: %d, offset: %d @@\n", fullpath[i], buf, (int)stAB[i+1].st_size,(int) offset);
-	  res = pread(fd, buf+stAB[i].st_size-1, stAB[i+1].st_size-1, offset);
-	  printf("2@@read: %s, buf: %s @@\n", fullpath[i], buf);
+	  
+	  int tempOffset=0;
+	  unsigned int tempSize;
+  	  if( i == n){
+     	 	  if( i%2 ==0){
+      		         tempOffset = sizeA;
+       		 	 sizeA += tempsize[2];
+      		  }
+     	 	  else{
+     		         tempOffset = sizeB;
+       	       	  	 sizeB += tempsize[2];
+      		  }
+      		  tempSize = tempsize[2];
+   	  }
+ 	  else{
+       		 if( i%2 ==0) {
+              		 tempOffset = sizeA;
+               		 sizeA += tempsize[1];
+    	 	 }
+      		 else{
+               		 tempOffset = sizeB;
+              		 sizeB += tempsize[1];
+       	  	 }
+  	         tempSize = tempsize[1];
+	  }
+	printf("\n-------------------------------------------------------\n1@@read: %s, buf: %s, size: %d, offset: %d @@\n", fullpath[i%2], buf, (int)tempSize,tempOffset);
+
+	  res = pread(fd, buf+total, tempSize, tempOffset);
+	  printf("2@@read: %s, buf: %s @@\n", fullpath[i%2], buf);
+	  
 	  if (res == -1)
 	    res = -errno;
+	  total += tempSize; 
 	  c += res;
-	  printf("3@@c: %d @@\n",c);
+	  printf("3@@c: %d @@\n----------------------------------------------------\n",c);
 	  close(fd);
   }
-  *(buf+c)='\n';
+  *(buf+c) = '\n';
   return c+1;
+  
+  
 }
 
 static int xmp_write(const char *path, const char *buf, size_t size,
     off_t offset, struct fuse_file_info *fi)
-{ 
+{
+  int stripeSize = 512; 
   char fullpaths[2][PATH_MAX];
   int fd;
   int res;
   int c;
+  int n;
   (void) fi;
-  char  stripe[2][512];
-  
-  unsigned int  tempsize[2];
+ 
+  unsigned int sizeA=0;
+  unsigned int sizeB=0;
+  unsigned int total=0;
+  unsigned int  tempsize[3];
+  printf("@@ buf[size]: %c @@\n", buf[size-1]);
+  if( buf[size-1] == '\n') tempsize[0] = size-1;
+  else tempsize[0] = size;
 
-  if(size%2 == 1){ // even chars
-	tempsize[0] = (size-1)/2;
-	tempsize[1] = tempsize[0];
-  }
-  else{ //odd chars
-	tempsize[0] = size/2;
-	tempsize[1] = size/2-1;
-  }
+  n = tempsize[0]/stripeSize; 
+  tempsize[1] = stripeSize ;
+  tempsize[2] = tempsize[0]%stripeSize;
   //printf
-  printf("@@ buf: %s, size: %d, temp1: %d, temp2: %d @@\n", buf, (int)size, (int)tempsize[0], (int)tempsize[1]);
-
-  strncpy(stripe[0], buf, tempsize[0]);
-  stripe[0][tempsize[0]] = '\n';
-  
-  strncpy(stripe[1], buf + tempsize[0], tempsize[1]);
-  stripe[1][tempsize[1]] = '\n';
-
+  printf("@@ buf: %s,n: %d, size: %d, temp0: %d, temp1: %d, temp2: %d  @@\n", buf,n, (int)size, (int)tempsize[0], (int)tempsize[1], (int)tempsize[2]);
+ 
   sprintf(fullpaths[0], "%s%s", global_context.driveA, path);
   sprintf(fullpaths[1], "%s%s", global_context.driveB, path);
-  //printf
-  printf("@@stripe1: %s , stripe2: %s @@\n", stripe[0], stripe[1]);
-  for (int i = 0; i < 2; ++i) {
-    const char* fullpath = fullpaths[i];
+  
+  for (int i = 0; i <= n; ++i) {
+    const char* fullpath = fullpaths[i%2];
     //printf
-    printf("@@write: %s, buf: %s, size: %d, offset: %d @@\n", fullpath, stripe[i], (int)size, (int)offset);
+    //printf("@@write: %s, buf: %s, size: %d, offset: %d @@\n", fullpath, stripe[i], (int)size, (int)offset);
     fd = open(fullpath, O_WRONLY);
     if (fd == -1)
       return -errno;
+    
+    unsigned int tempOffset=0;
+    unsigned int tempSize;
+   
+    if( i == n){
+	if( i%2 ==0){
+		tempOffset = sizeA;
+		sizeA += tempsize[2];
+	}
+	else{
+		tempOffset = sizeB;
+		sizeB += tempsize[2];
+	}
+	tempSize = tempsize[2];
+    }
+    else{
+    	if( i%2 ==0) {
+		tempOffset = sizeA;
+		sizeA += tempsize[1];
+   	}
+   	else{
+		tempOffset = sizeB;
+		sizeB += tempsize[1];
+   	}
+	tempSize = tempsize[1];
+    }
+    
 
-    res = pwrite(fd, stripe[i], tempsize[i]+1, 0);
+    res = pwrite(fd, buf+total, tempSize, tempOffset);
+    total += tempSize;
     //printf
     printf("@@res: %d  @@\n",res);
     if (res == -1){
@@ -501,8 +567,22 @@ static int xmp_write(const char *path, const char *buf, size_t size,
     c += res;
     close(fd);
   }
+   
+  for(int i =0; i<2; i++){
+	const char* fullpath = fullpaths[i];
+	fd = open(fullpath, O_WRONLY);
+	struct stat statTemp;
+	stat(fullpath, &statTemp);
+	if(fd == -1) return -errno;
+	res = pwrite(fd, "\n", 1, statTemp.st_size);
+	//printf
+	printf("@@@ size%d: %d @@@\n", i, (int) statTemp.st_size);
+  }
+  //print
+  printf("@@@ sizeA: %d, sizeB: %d @@@\n", (int) sizeA, (int)sizeB);
+  
 
-  return c-1;
+  return c+1;
 }
 
 static int xmp_statfs(const char *path, struct statvfs *stbuf)
