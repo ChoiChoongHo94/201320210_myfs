@@ -766,8 +766,10 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  strcpy(global_context.driveA, argv[--argc]);
+ 
   strcpy(global_context.driveB, argv[--argc]);
+  strcpy(global_context.driveA, argv[--argc]);
+  
 
   srand(time(NULL));
 
